@@ -1,0 +1,85 @@
+{
+  "name": "@local/dsh-agent-crew",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Multi-agent collaboration for DeepSeek Harness: reusable specialist profiles, a lead-run task graph, three-tier per-specialist memory, and a sidebar management page.",
+  "type": "module",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "multi-agent",
+    "orchestration",
+    "subagent"
+  ],
+  "license": "MIT",
+  "exports": {
+    ".": "./index.js",
+    "./lib/profiles": "./lib/profiles.js",
+    "./lib/orchestrator": "./lib/orchestrator.js",
+    "./lib/store": "./lib/store.js",
+    "./lib/util": "./lib/util.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./client": "./client.js"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "lib",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "docs",
+    "icon.svg",
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "check": "node --check index.js && node --check client.js && node --check lib/util.js && node --check lib/store.js && node --check lib/profiles.js && node --check lib/memory.js && node --check lib/orchestrator.js && node --check lib/management.js",
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.1.0",
+    "@deepseek-ai/dsh-tools": "^0.2.2-rc.1",
+    "@deepseek-ai/schemastery": "~3.19.0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    },
+    "@deepseek-ai/schemastery": {
+      "optional": true
+    }
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-input-trigger",
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yixin2021/dsh-agent-crew.git"
+  },
+  "homepage": "https://github.com/yixin2021/dsh-agent-crew",
+  "bugs": {
+    "url": "https://github.com/yixin2021/dsh-agent-crew/issues"
+  }
+}

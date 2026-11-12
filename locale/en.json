@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Agent crew",
+    "description": "Staff a team of specialist agents and manage them from the left sidebar: define each agent's role, capabilities, and exact tools; a lead agent decomposes work, delegates tasks, collects results, and retries failures.",
+    "detail": "docs/DETAIL.md"
+  }
+}
