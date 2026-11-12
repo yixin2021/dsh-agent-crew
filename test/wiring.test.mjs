@@ -77,3 +77,34 @@ test('the @ mention source is registered on the trigger service when present', a
   assert.match(source, /dsh-agent:/, 'the wire form is what the transcript rule matches')
   assert.match(source, /openReference:\s*\(\)\s*=>\s*false/, 'no preview target exists, so the gesture is left alone')
 })
+
+test('the dispatch-first rule rides in the prompt and the tool descriptions', async () => {
+  const { readFile } = await import('node:fs/promises')
+  const source = await readFile(ENTRY, 'utf8')
+
+  // The observed failure: the lead read a 1652-line plan for 55 steps and never
+  // delegated. The rule must therefore be stated where a model cannot miss it.
+  assert.match(source, /Dispatch first/, 'the prompt states the rule')
+  assert.match(source, /before reading the referenced files/, 'and says what not to do first')
+
+  // Slice from each tool name to the next definition, so the order of the
+  // surrounding fields cannot make the assertion brittle.
+  const between = (from, to) => {
+    const start = source.indexOf(from)
+    assert.ok(start >= 0, `expected ${from}`)
+    const end = source.indexOf(to, start + from.length)
+    return source.slice(start, end < 0 ? start + 1200 : end)
+  }
+
+  const dispatchTool = between("name: 'crew_task_dispatch'", "name: 'crew_task_retry'")
+  assert.match(dispatchTool, /Call this FIRST/, 'the dispatch tool repeats it at the call site')
+  assert.match(dispatchTool, /do not investigate before delegating/)
+
+  const listTool = between("name: 'crew_agent_list'", "name: 'crew_agent_delete'")
+  assert.match(listTool, /dsh-agent:profile-id/, 'the wire form is spelled out where the id is used')
+  assert.match(listTool, /already listed/, 'so no lookup is needed first')
+
+  // No pre-step injection: a custom message source would enter the durable log,
+  // and an unknown source kind risks a Session that cannot reopen.
+  assert.ok(!/registerMentionNudge/.test(source), 'no custom source is injected into the log')
+})

@@ -565,7 +565,8 @@ You can staff a team of specialist agents and run a dependency graph of tasks.
 
 - \`crew_agent_list\` / \`crew_agent_create\` define reusable specialists: role, instructions, capabilities, and the exact tools each one may use. \`crew_agent_delete\` removes one.
 - \`crew_run_create\` opens a run for one objective, \`crew_task_add\` adds tasks with \`dependsOn\` edges, and \`crew_run_start\` executes the graph and returns the aggregated report. \`crew_task_dispatch\` is the shortcut for one self-contained task.
-- A message containing \`@<specialist-id>\` (the user picked it from the \`@\` menu) means that person owns the request: dispatch to exactly that profile instead of choosing one yourself.
+- A message containing a mention — the wire form is \`@[display name](dsh-agent:profile-id)\` — means that specialist owns the request. **Dispatch first**: call \`crew_task_dispatch\` (or open a run) before reading the referenced files. Reading a long plan, scanning a repository, and tracing code are the specialist's job; a lead that researches first burns the turn without delegating. Read the request, then hand over.
+- A plan document is a pointer, not a briefing: pass its path, the acceptance criteria, and the constraints in the task description. Do not summarise a 1000-line plan yourself before delegating.
 - Each specialist keeps its own memory across runs. Read it with \`crew_agent_memory\` \`list\` before a demanding task, and \`add\` a note when the user states a durable preference the specialist should carry.
 - Tasks whose dependencies are incomplete never start. A failed task blocks its dependents; \`crew_task_retry\` retries it after the cause is fixed.
 - Every specialist works only from the prompt it receives. State the deliverable and acceptance criteria in each task description, and put shared context in the run objective.
@@ -719,7 +720,8 @@ function registerTools(ctx, { orchestrator, service }) {
 
   tool({
     name: 'crew_agent_list',
-    description: 'List the specialist agent profiles available for delegation, including each profile\'s tools and model route.',
+    description:
+      'List the specialist agent profiles available for delegation, including each profile\'s tools and model route. A message may contain a mention written as `@[display name](dsh-agent:profile-id)`; that id is the profile to delegate to, and it is always already listed here — no lookup is needed before dispatching.',
     parameters: {},
     output: PROFILE_LIST_OUTPUT,
     execute() {
@@ -986,7 +988,7 @@ function registerTools(ctx, { orchestrator, service }) {
   tool({
     name: 'crew_task_dispatch',
     description:
-      'Delegate one self-contained task to a specialist immediately, without creating a run explicitly. Returns the task result and the recorded run.',
+      'Delegate one self-contained task to a specialist immediately, without creating a run explicitly. Returns the task result and the recorded run. Call this FIRST when the request @-mentions a specialist: the specialist can read the plan or the repository itself, so do not investigate before delegating.',
     parameters: {
       profile_id: { type: 'string', required: true, description: 'Specialist profile id.' },
       subject: { type: 'string', required: true, description: 'Short task title.' },
