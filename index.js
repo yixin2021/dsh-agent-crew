@@ -247,6 +247,14 @@ export async function apply(ctx, config) {
     }
   }
 
+  // A run left `running` by a previous process owns no live activation here, so
+  // close it before anything can try to start it again.
+  try {
+    await orchestrator.recoverStaleRuns()
+  } catch (error) {
+    logger?.warn?.(`agent-crew could not recover stale runs: ${errorInfo(error).message}`)
+  }
+
   /** Policies waiting for their child's creation announcement. */
   const pendingPolicies = new Map()
 
@@ -264,14 +272,17 @@ export async function apply(ctx, config) {
       const childId = randomUUID()
       const controller = new AbortController()
       const unlink = linkAbort(signal, controller)
+      // Never run unbounded: `0` and a missing value both fall back to the
+      // configured default, because a delegation that never returns reads as a
+      // frozen session and leaves the run `running` forever.
+      const deadline = Number(timeoutMs) > 0 ? Number(timeoutMs) : resolved.limits.taskTimeoutMs
       let timedOut = false
-      let timer
-      if (timeoutMs > 0) {
-        timer = setTimeout(() => {
-          timedOut = true
-          controller.abort()
-        }, timeoutMs)
-      }
+      const timer = deadline > 0
+        ? setTimeout(() => {
+            timedOut = true
+            controller.abort()
+          }, deadline)
+        : undefined
 
       const interruptChild = () => {
         // Only a local child has the reserved session id this seam addresses.
@@ -334,7 +345,7 @@ export async function apply(ctx, config) {
             text: '',
             errorCode: timedOut ? 'TIMEOUT' : signal?.aborted ? 'ABORTED' : info.code,
             errorMessage: timedOut
-              ? `The delegated agent exceeded its ${timeoutMs}ms limit.`
+              ? `The delegated agent exceeded its ${deadline}ms limit.`
               : signal?.aborted
                 ? 'The run was cancelled.'
                 : info.message,
@@ -365,7 +376,7 @@ export async function apply(ctx, config) {
             text: '',
             errorCode: timedOut ? 'TIMEOUT' : signal?.aborted ? 'ABORTED' : failure.code,
             errorMessage: timedOut
-              ? `The delegated agent exceeded its ${timeoutMs}ms limit.`
+              ? `The delegated agent exceeded its ${deadline}ms limit.`
               : signal?.aborted
                 ? 'The run was cancelled.'
                 : failure.message,
@@ -387,7 +398,7 @@ export async function apply(ctx, config) {
                 errorCode: synthetic,
                 errorMessage:
                   synthetic === 'TIMEOUT'
-                    ? `The delegated agent exceeded its ${timeoutMs}ms limit.`
+                    ? `The delegated agent exceeded its ${deadline}ms limit.`
                     : 'The run was cancelled.',
               }
             : {}),
@@ -681,7 +692,10 @@ function registerTools(ctx, { orchestrator, service }) {
       reasoningEffort: { type: 'string', description: 'Reasoning effort for the specialist route.' },
       maxTokens: { type: 'number', description: 'Output-token limit for the specialist.' },
       maxAttempts: { type: 'number', description: 'Default attempt bound (1-5) for tasks assigned to this specialist.' },
-      timeoutMs: { type: 'number', description: 'Default per-attempt time limit in milliseconds; 0 disables it.' },
+      timeoutMs: {
+        type: 'number',
+        description: 'Default per-attempt time limit in milliseconds. Omit for the run default (10 minutes); 0 means no limit is recorded.',
+      },
       tags: { type: 'array', items: { type: 'string' }, description: 'Optional labels for organizing profiles.' },
     },
     output: {
@@ -883,7 +897,10 @@ function registerTools(ctx, { orchestrator, service }) {
               description: 'Advisory workspace-relative paths this task may modify.',
             },
             max_attempts: { type: 'number', description: 'Attempt bound for this task (1-5).' },
-            timeout_ms: { type: 'number', description: 'Time limit for one attempt; 0 disables it.' },
+            timeout_ms: {
+        type: 'number',
+        description: 'Time limit in milliseconds for one attempt. Omit to use the default (10 minutes); a value of 0 is treated as omitted, because an unbounded delegation can hang the run.',
+      },
             cwd: { type: 'string', description: 'Working directory for this task only.' },
           },
         },
@@ -988,30 +1005,37 @@ function registerTools(ctx, { orchestrator, service }) {
   tool({
     name: 'crew_task_dispatch',
     description:
-      'Delegate one self-contained task to a specialist immediately, without creating a run explicitly. Returns the task result and the recorded run. Call this FIRST when the request @-mentions a specialist: the specialist can read the plan or the repository itself, so do not investigate before delegating.',
+      'Delegate one self-contained task to a specialist, without creating a run explicitly. Call this FIRST when the request @-mentions a specialist: the specialist can read the plan or the repository itself, so do not investigate before delegating. By default it waits for the result; pass `background: true` for long work (a multi-file implementation, a full test run) and poll `crew_run_status` instead of blocking.',
     parameters: {
       profile_id: { type: 'string', required: true, description: 'Specialist profile id.' },
       subject: { type: 'string', required: true, description: 'Short task title.' },
       description: { type: 'string', description: 'Complete instructions; the specialist sees only this.' },
       cwd: { type: 'string', description: 'Working directory for the delegated agent.' },
       max_attempts: { type: 'number', description: 'Attempt bound (1-5).' },
-      timeout_ms: { type: 'number', description: 'Time limit for one attempt; 0 disables it.' },
+      timeout_ms: {
+        type: 'number',
+        description: 'Time limit in milliseconds for one attempt. Omit to use the default (10 minutes); a value of 0 is treated as omitted, because an unbounded delegation can hang the run.',
+      },
+      background: {
+        type: 'boolean',
+        description: 'Return the run id immediately and let it settle in the background. Use it for long work, then poll crew_run_status.',
+      },
     },
     output: RUN_OUTPUT,
     async execute(args, exec) {
       const parent = exec.agent
       if (!parent) throw new CrewError('NO_CALLER', 'crew_task_dispatch must be called by a lead agent.')
-      const run = await orchestrator.dispatchOne(
-        {
-          profileId: args.profile_id,
-          subject: args.subject,
-          description: args.description,
-          cwd: args.cwd,
-          maxAttempts: args.max_attempts,
-          timeoutMs: args.timeout_ms,
-        },
-        { parent, signal: exec.signal },
-      )
+      const request = {
+        profileId: args.profile_id,
+        subject: args.subject,
+        description: args.description,
+        cwd: args.cwd,
+        maxAttempts: args.max_attempts,
+        timeoutMs: args.timeout_ms,
+      }
+      const run = args.background === true
+        ? await orchestrator.dispatchOneInBackground(request, { parent, signal: exec.signal })
+        : await orchestrator.dispatchOne(request, { parent, signal: exec.signal })
       return { run }
     },
     presentCall: (args) => ({

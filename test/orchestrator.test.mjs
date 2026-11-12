@@ -374,3 +374,92 @@ test('a corrupt state document is preserved and reported', async () => {
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+test('timeout_ms 0 means "use the default", never "wait forever"', async () => {
+  const { store, dir } = await makeStore()
+  try {
+    let seen
+    const delegate = async (call) => {
+      seen = call.timeoutMs
+      return { childId: 'c', name: call.name, stopReason: 'completed', text: 'ok' }
+    }
+    const orchestrator = createOrchestrator({ store, delegate, toolNames: () => [], limits: { taskTimeoutMs: 1234 } })
+    await orchestrator.defineProfile({ id: 'rev', name: 'R', tools: ['read'] })
+    const run = await orchestrator.createRun({ title: 'T', lead: { id: 'lead' } })
+    await orchestrator.addTasks(run.id, [{ profileId: 'rev', subject: 'S', timeoutMs: 0 }])
+    await orchestrator.startRun(run.id, { parent: { id: 'lead' } })
+    // A zero deadline used to reach the adapter and disable its timer, so a hung
+    // delegation left the session looking frozen.
+    assert.equal(seen, 1234, 'zero falls back to the configured default')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('a run left running by an earlier process is recovered, not stuck', async () => {
+  const { store, dir } = await makeStore()
+  try {
+    const orchestrator = createOrchestrator({ store, delegate: async () => ({}) })
+    await orchestrator.defineProfile({ id: 'rev', name: 'R', tools: ['read'] })
+    const run = await orchestrator.createRun({ title: 'Orphan', lead: { id: 'lead' } })
+    await orchestrator.addTasks(run.id, [{ profileId: 'rev', subject: 'S' }])
+    // Simulate a crash: the record says running, but nothing owns it.
+    await store.update((state) => {
+      const draft = state.runs[run.id]
+      draft.status = 'running'
+      draft.tasks['task-1'].status = 'running'
+    })
+    const recovered = await orchestrator.recoverStaleRuns()
+    assert.equal(recovered, 1)
+    const view = orchestrator.getRun(run.id)
+    assert.equal(view.status, 'cancelled')
+    assert.equal(view.tasks[0].status, 'cancelled')
+    assert.equal(view.tasks[0].error.code, 'INTERRUPTED')
+    // And the recovered run can be retried instead of refusing forever.
+    assert.equal((await orchestrator.recoverStaleRuns()), 0, 'recovery is idempotent')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('a background dispatch returns before the task settles', async () => {
+  const { store, dir } = await makeStore()
+  try {
+    let release
+    const gate = new Promise((resolve) => { release = resolve })
+    const delegate = async (call) => {
+      await gate
+      return { childId: 'c', name: call.name, stopReason: 'completed', text: 'done' }
+    }
+    const orchestrator = createOrchestrator({ store, delegate, toolNames: () => [] })
+    await orchestrator.defineProfile({ id: 'rev', name: 'R', tools: ['read'] })
+
+    // The point of the mode: this call must not wait for the delegation.
+    const view = await orchestrator.dispatchOneInBackground(
+      { profileId: 'rev', subject: 'Long job' },
+      { parent: { id: 'lead' } },
+    )
+    // Already opened and started; `startRun` flips the record to `running` a
+    // turn later, so `ready` is the honest state at this instant. The point is
+    // that the call returned without waiting for the delegation.
+    assert.ok(['ready', 'running'].includes(view.status), `unexpected status ${view.status}`)
+    assert.equal(view.tasks[0].status, 'pending')
+
+    release()
+    // Poll for a terminal state: the run advances on its own after the gate
+    // opens, and `ready` may still be the state when the dispatch returned.
+    const terminal = new Set(['completed', 'failed', 'cancelled'])
+    for (let attempt = 0; attempt < 200 && !terminal.has(orchestrator.getRun(view.id).status); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+    const finished = orchestrator.getRun(view.id, { includeResults: true })
+    assert.equal(finished.status, 'completed')
+    assert.equal(finished.tasks[0].result.text, 'done')
+
+    // The background run writes its outcome asynchronously; let its store write
+    // drain before the temporary directory disappears.
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
