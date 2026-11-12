@@ -500,3 +500,42 @@ padding: 0 4px;
 
 仍**未经浏览器确认**。这次的依据是官方 chip 的真实 CSS 而非猜测，但「看起来
 是否与输入框内的胶囊一致」只能由你目视判断。
+
+## 12. 与原生 subagent 的行为对齐（实测确认）
+
+用户反馈「用智能体没有直接使用 codex 快」。对照 `dsh-tool-subagent` 与 `dsh-subagent` 的实现，
+定位到三处偏差，已全部修复并端到端验证。
+
+### 12.1 三处偏差
+
+| # | 偏差 | 原生行为 | 修复 |
+|---|---|---|---|
+| 1 | 委派用 `delivery: 'caller'` | `delivery: 'parent'`：结束后推完成通知并唤醒父会话 | 改为 `parent` |
+| 2 | `crew_task_dispatch` 同步阻塞到专家结束 | 立即返回名字，稍后送达通知 | 默认改为异步；`wait: true` 恢复原地等待 |
+| 3 | `timeout_ms: 0` 等于无限等待 | — | `0` 视为「用默认值」，adapter 层再强制兜底 |
+
+第 1 条是最关键的：`caller` 这个值的语义就是**不发父会话通知**。所以异步派发在修复前会
+「静默结束」——专家跑完了，主协作人永远不知道。两者必须一起改，只改异步会更糟。
+
+### 12.2 端到端验证
+
+派发一次只读任务（`echo ASYNC_OK`），不做任何轮询：
+
+```
+crew_task_dispatch → 立即返回 status: ready（未阻塞）
+6.0 秒后 → 完成通知自动送达主协作人（"agent-3 finished ... ASYNC_OK"）
+crew_run_status    → completed，result.text = "ASYNC_OK"
+```
+
+**通知是运行时主动推送的，不是我去查的** —— 这正是原生 `subagent_codex` 的交互方式。
+
+### 12.3 附带发现
+
+`childName` 从会话 id（如 `7beef2c2-…`）变成了可读的 `agent-3`。
+源码注释解释了原因：caller 交付的外部运行**不进入 catalog**、也不接受名字，名字回落为 Session id；
+parent 交付则登记进 catalog 并分配名字。所以这次改动同时让 codex 专家变得**可被发现**
+（`list_agents` 能看到它）。
+
+### 12.4 测试
+
+全量 **55/55 通过**。已推送 `5cd4d4a`。
