@@ -329,7 +329,11 @@ export async function apply(ctx, config) {
             prompt: [{ type: 'text', text: `${policy.rolePrompt}\n\n---\n\n${prompt}` }],
             parent,
             signal: controller.signal,
-            delivery: 'caller',
+            // `parent` delivery is what makes crew behave like the native
+            // subagent tool: the runtime pushes a completion notice to the lead
+            // and wakes it when idle. `caller` suppresses that notice, so an
+            // asynchronous run settled silently and the lead never learned.
+            delivery: 'parent',
             // A local child may be routed to a different model; an external
             // backend owns its own configuration.
             ...(local && agentOptions ? { agentOptions } : {}),
@@ -1005,7 +1009,7 @@ function registerTools(ctx, { orchestrator, service }) {
   tool({
     name: 'crew_task_dispatch',
     description:
-      'Delegate one self-contained task to a specialist, without creating a run explicitly. Call this FIRST when the request @-mentions a specialist: the specialist can read the plan or the repository itself, so do not investigate before delegating. By default it waits for the result; pass `background: true` for long work (a multi-file implementation, a full test run) and poll `crew_run_status` instead of blocking.',
+      'Delegate one self-contained task to a specialist. Call this FIRST when the request @-mentions a specialist: the specialist can read the plan or the repository itself, so do not investigate before delegating. It returns the run id immediately and the run settles in the background, like the native subagent tool; read the result with `crew_run_status` (or pass `wait: true` to block for it inline).',
     parameters: {
       profile_id: { type: 'string', required: true, description: 'Specialist profile id.' },
       subject: { type: 'string', required: true, description: 'Short task title.' },
@@ -1016,9 +1020,9 @@ function registerTools(ctx, { orchestrator, service }) {
         type: 'number',
         description: 'Time limit in milliseconds for one attempt. Omit to use the default (10 minutes); a value of 0 is treated as omitted, because an unbounded delegation can hang the run.',
       },
-      background: {
+      wait: {
         type: 'boolean',
-        description: 'Return the run id immediately and let it settle in the background. Use it for long work, then poll crew_run_status.',
+        description: 'Block until the specialist finishes and return its result inline. Omit for the default: the call returns the run id immediately and the run settles in the background, like the native subagent tool.',
       },
     },
     output: RUN_OUTPUT,
@@ -1033,9 +1037,12 @@ function registerTools(ctx, { orchestrator, service }) {
         maxAttempts: args.max_attempts,
         timeoutMs: args.timeout_ms,
       }
-      const run = args.background === true
-        ? await orchestrator.dispatchOneInBackground(request, { parent, signal: exec.signal })
-        : await orchestrator.dispatchOne(request, { parent, signal: exec.signal })
+      // Asynchronous by default: a blocking dispatch left the model with nothing
+      // to report for minutes and read as a frozen session. `wait: true` opts
+      // back into the old inline behaviour for a quick job.
+      const run = args.wait === true
+        ? await orchestrator.dispatchOne(request, { parent, signal: exec.signal })
+        : await orchestrator.dispatchOneInBackground(request, { parent, signal: exec.signal })
       return { run }
     },
     presentCall: (args) => ({
