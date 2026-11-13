@@ -158,6 +158,12 @@ window.__ModuleLoader__.load({
       memoryLog: 'Log · automatic, never injected',
       memoryCapacity: '{used} / {limit} characters of index',
       memoryEmpty: 'Nothing kept yet.',
+      attemptOpenSession: 'Open transcript',
+      attemptNoSession: 'External run · no local transcript',
+      attemptPrompt: 'What it was asked',
+      attemptShowPrompt: 'Show the dispatched prompt',
+      attemptHidePrompt: 'Hide the prompt',
+      attemptResult: 'Reported',
       memoryNone: 'None yet.',
       memoryNoTopics: 'No topics.',
       memoryNoLog: 'No log entries.',
@@ -297,6 +303,12 @@ window.__ModuleLoader__.load({
       memoryLog: '日志 · 自动记录，从不注入',
       memoryCapacity: '索引已用 {used} / {limit} 字符',
       memoryEmpty: '还没有保留任何内容。',
+      attemptOpenSession: '查看会话',
+      attemptNoSession: '外部运行 · 无本地会话记录',
+      attemptPrompt: '收到的任务',
+      attemptShowPrompt: '展开下发的提示词',
+      attemptHidePrompt: '收起提示词',
+      attemptResult: '汇报',
       memoryNone: '暂无。',
       memoryNoTopics: '暂无专题。',
       memoryNoLog: '暂无日志。',
@@ -1495,9 +1507,68 @@ window.__ModuleLoader__.load({
                 task.resultPreview
                   ? h('div', { className: 'dac-taskResult' }, task.resultPreview)
                   : null,
+                renderAttempts(task),
               ),
             ),
           )
+        }
+
+        /**
+         * One attempt's record: the runtime, its transcript link or the reason
+         * there is none, and the prompt it received.
+         */
+        function renderAttempts(task) {
+          const attempts = Array.isArray(task.attempts) ? task.attempts : []
+          if (attempts.length === 0) return null
+          return h(
+            'ul',
+            { className: 'dac-attempts' },
+            ...attempts.map((attempt) =>
+              h(
+                'li',
+                { className: 'dac-attempt', key: `a${attempt.attempt}` },
+                h(
+                  'div',
+                  { className: 'dac-attemptHead' },
+                  h('span', { className: 'dac-attemptNo' }, `#${attempt.attempt}`),
+                  h(
+                    'span',
+                    { className: `dac-chip dac-chip-mono` },
+                    attempt.runtime === 'codex' ? t('runtimeCodex') : t('runtimeSpawn'),
+                  ),
+                  h('span', { className: 'dac-attemptStop' }, attempt.stopReason ?? ''),
+                  attempt.durationMs ? h('span', { className: 'dac-attemptTime' }, formatDuration(attempt.durationMs, t)) : null,
+                  attempt.sessionAvailable && attempt.childId
+                    ? h(
+                        'button',
+                        {
+                          type: 'button',
+                          className: 'dac-btn dac-btn-ghost dac-attemptOpen',
+                          onClick: () => openTranscript(attempt.childId),
+                        },
+                        t('attemptOpenSession'),
+                      )
+                    : h('span', { className: 'dac-attemptNoSession' }, t('attemptNoSession')),
+                ),
+                attempt.errorCode
+                  ? h('div', { className: 'dac-taskError' }, attempt.errorCode)
+                  : null,
+                attempt.promptPreview
+                  ? h(
+                      'details',
+                      { className: 'dac-attemptPrompt' },
+                      h('summary', null, t('attemptShowPrompt')),
+                      h('pre', { className: 'dac-pre' }, attempt.promptPreview),
+                    )
+                  : null,
+              ),
+            ),
+          )
+        }
+
+        /** Reopen a local child's DSH session; an external run has none. */
+        function openTranscript(sessionId) {
+          navigation?.openSession?.(sessionId)
         }
       }
 
@@ -1669,6 +1740,16 @@ window.__ModuleLoader__.load({
         '.dac-tierText{flex:1 1 auto;min-width:0;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}',
         '.dac-tierTime{flex:none;font-size:11px;color:var(--dsw-alias-label-tertiary,var(--dsw-alias-label-secondary,currentColor));font-variant-numeric:tabular-nums}',
         '.dac-memoryActions{display:flex;justify-content:flex-end}',
+        '.dac-attempts{list-style:none;margin:0;padding:6px 0 0;display:flex;flex-direction:column;gap:4px}',
+        '.dac-attempt{display:flex;flex-direction:column;gap:3px;padding:5px 8px;border-radius:6px;background:color-mix(in srgb,currentColor 4%,transparent)}',
+        '.dac-attemptHead{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:11px;line-height:16px;color:var(--dsw-alias-label-secondary,currentColor)}',
+        '.dac-attemptNo{font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-tertiary,currentColor)}',
+        '.dac-attemptStop{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}',
+        '.dac-attemptTime{font-variant-numeric:tabular-nums}',
+        '.dac-attemptOpen{margin-left:auto;height:22px;padding:0 8px;font-size:11px}',
+        '.dac-attemptNoSession{margin-left:auto;font-size:11px;color:var(--dsw-alias-label-tertiary,currentColor)}',
+        '.dac-attemptPrompt{margin:2px 0 0;font-size:11px;line-height:16px}',
+        '.dac-attemptPrompt summary{cursor:pointer;color:var(--dsw-alias-label-tertiary,currentColor)}',
         '.dac-form{gap:14px}',
         '.dac-formGroup{display:flex;flex-direction:column;gap:8px;padding-top:12px;border-top:0.5px solid var(--dsw-alias-border-l1,rgba(128,128,128,.22))}',
         '.dac-formGroup:first-of-type{border-top:none;padding-top:0}',
@@ -1980,6 +2061,17 @@ window.__ModuleLoader__.load({
             const value = pendingSelection
             pendingSelection = null
             return value
+          },
+          /**
+           * Reopen a child's own transcript. A local specialist owns a real DSH
+           * Session; an external Codex run is ephemeral and has none.
+           */
+          openSession: (sessionId) => {
+            try {
+              ctx.get?.('uiWorkspace')?.openSession?.(sessionId)
+            } catch {
+              // A profile without the workspace UI keeps the row inert.
+            }
           },
         }
         const { AgentCrewPage, SidebarIcon } = createUi(t, tick, navigation)

@@ -301,6 +301,32 @@ function sampleData() {
             dependsOn: [],
             error: { code: 'TIMEOUT', message: 'The delegated agent exceeded its 1ms limit.' },
             resultPreview: '',
+            attempts: [
+              {
+                attempt: 2,
+                childId: 'child-local-1',
+                name: 'reviewer-ab12',
+                runtime: 'spawn',
+                sessionAvailable: true,
+                durationMs: 41233,
+                stopReason: 'completed',
+                resultChars: 120,
+                outputPreview: 'found two gaps',
+                promptPreview: '# Assigned task: Review login flow',
+              },
+              {
+                attempt: 1,
+                childId: 'child-codex-1',
+                name: 'agent-3',
+                runtime: 'codex',
+                sessionAvailable: false,
+                durationMs: 7344,
+                stopReason: 'completed',
+                resultChars: 14,
+                outputPreview: 'ASYNC_OK',
+                promptPreview: '# Assigned task: Review login flow',
+              },
+            ],
           },
           {
             id: 'task-2',
@@ -965,4 +991,77 @@ test('the transcript chip installs its own stylesheet', async () => {
   } finally {
     globalThis.document = previous
   }
+})
+
+test('a run record shows each attempt, its runtime, and how to see more', async () => {
+  const { React, mount } = createReact()
+  globalThis.fetch = async (url, options) => {
+    const body = JSON.parse(options?.body ?? '{}')
+    if (body.action === 'codexProviders') {
+      return { status: 200, json: async () => ({ ok: true, data: { providers: [] } }) }
+    }
+    return { status: 200, json: async () => ({ ok: true, data: sampleData() }) }
+  }
+
+  const opened = []
+  const uiWorkspace = { openSession: (id) => opened.push(id) }
+  const module = await loadModule(React)
+  const registrations = []
+  module.apply({
+    slots: {
+      inject: (_slot, cb) => cb(),
+      register: (options, component) => {
+        registrations.push({ options, component })
+        return () => {}
+      },
+    },
+    locale: { getLocale: () => ({ active: 'en' }) },
+    effect: (fn) => fn(),
+    on: () => () => {},
+    get: (name) => (name === 'uiWorkspace' ? uiWorkspace : undefined),
+    inject: (names, cb) => {
+      const inputTriggers = { registerSource: () => () => {} }
+      if (!names.includes('uiConversation')) return cb({ inputTriggers, effect: (fn) => fn() })
+      return cb({
+        inputTriggers,
+        uiConversation: { userText: { register: () => () => {} } },
+        slots: { inject: (_slot, inner) => inner(), register: () => () => {} },
+        effect: (fn) => fn(),
+      })
+    },
+  })
+
+  const Page = registrations.find((r) => r.options.name === 'main').component
+  const view = mount(Page, {})
+  await new Promise((resolve) => setTimeout(resolve, 0))
+
+  // Switch to the Runs tab and expand the run.
+  const runsTab = collect(view.paint(), (node) => node.props?.['role'] === 'tab' && node.type === 'button')
+  runsTab[1].props.onClick()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  const expand = collect(view.paint(), (node) => node.type === 'button' && /Show tasks/.test(textOf(node)))[0]
+  expand.props.onClick()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+
+  const tree = view.paint()
+  const text = textOf(tree)
+
+  // Both attempts are listed with their runtime.
+  assert.match(text, /#1/)
+  assert.match(text, /#2/)
+  assert.match(text, /codex/)
+  assert.match(text, /DSH subagent/)
+
+  // The local attempt offers its transcript; the external one states why not.
+  assert.match(text, /Open transcript/)
+  assert.match(text, /External run · no local transcript/)
+
+  // The prompt it received is available in the record.
+  assert.match(text, /Show the dispatched prompt/)
+
+  // Clicking the link reopens that exact child session.
+  const openButton = collect(tree, (node) => node.type === 'button' && /Open transcript/.test(textOf(node)))[0]
+  assert.ok(openButton, 'expected a transcript link')
+  openButton.props.onClick()
+  assert.deepEqual(opened, ['child-local-1'])
 })
